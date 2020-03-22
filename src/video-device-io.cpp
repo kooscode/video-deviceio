@@ -1,20 +1,21 @@
 #include <errno.h>
 #include <fcntl.h>
-#include <linux/videodev2.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include <opencv2/core/core.hpp>
-#include <opencv2/highgui/highgui.hpp>
 #include <iostream>
 
+#include <linux/videodev2.h>
 
-#include "libterraclear/src/stopwatch.hpp"
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/imgcodecs.hpp>
 
-uint8_t *buffer;
+uchar* buffer;
  
 //wrapper for iotcl to retry on system interrupt..
 static int ioctl_internal(int fd, int request, void *arg)
@@ -116,8 +117,10 @@ int print_caps(int fd)
         //fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_BGR24;
         //fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_GREY;
         fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_MJPEG;
-//        fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUV422M;
-//        fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_H264;
+    //    fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUV422M;
+        // fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUV422P;
+        // fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV; //USB CAMERA!!
+    //    fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_H264;
 //        fmt.fmt.pix.field = V4L2_FIELD_NONE;
         
         if (-1 == ioctl_internal(fd, VIDIOC_S_FMT, &fmt))
@@ -126,6 +129,8 @@ int print_caps(int fd)
             return 1;
         }
  
+
+
         strncpy(fourcc, (char *)&fmt.fmt.pix.pixelformat, 4);
         printf( "Selected Camera Mode:\n"
                 "  Width: %d\n"
@@ -169,7 +174,7 @@ int init_mmap(int fd)
     }
  
     //map the buffer..
-    buffer = (uint8_t *) mmap (NULL, buffer_info.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, buffer_info.m.offset);
+    buffer = (uchar*) mmap (NULL, buffer_info.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, buffer_info.m.offset);
 
     //turn stream on..
     if(-1 == ioctl_internal(fd, VIDIOC_STREAMON, &buffer_info.type))
@@ -184,11 +189,8 @@ int init_mmap(int fd)
     return 0;
 }
  
-terraclear::stopwatch _sw;
-
 int capture_image(int fd)
 {
-    _sw.reset();
     struct v4l2_buffer buffer_info;
     memset(&buffer_info, 0, sizeof(buffer_info));
             
@@ -197,7 +199,7 @@ int capture_image(int fd)
     buffer_info.index = 0;
     if(-1 == ioctl_internal(fd, VIDIOC_QBUF, &buffer_info))
     {
-        perror("Query Buffer");
+        perror("Queue Buffer");
         return 1;
     }
 
@@ -229,56 +231,50 @@ int capture_image(int fd)
     //ignore first frame (always corrupt jpeg)
     if (buffer_info.sequence > 0)
     {
+        cv::Mat cvmat;
+
         //convert buffer to opencv Mat.& decode JPEG
-        IplImage* frame;
-        CvMat cvmat = cvMat(1080, 1920, CV_8UC3, (void*)buffer);
+        //cv::Mat inmat(600, 800,  CV_8UC2, buffer);//, buffer_info.length);
+        // cv::cvtColor (inmat, cvmat, cv::COLOR_YUV2BGR_YUYV);
         
         //decode
-        frame = cvDecodeImage(&cvmat, 1);
+        std::vector<uchar> data = std::vector<uchar>(buffer, buffer + buffer_info.length);
+        cvmat = cv::imdecode(data, cv::IMREAD_COLOR);
 
-        cvNamedWindow("window",CV_WINDOW_AUTOSIZE);
-        cvShowImage("window", frame);
-    }
-   cvWaitKey(1);
+        cv::imshow ("foo", cvmat);    
+        
+        }
+
+    return cv::waitKey(1);
+
 }
  
 int main()
 {
-    _sw.start();
-    terraclear::stopwatch sw;
-    sw.start();
-        int fd;
- 
-        fd = open("/dev/video1", O_RDWR);
-        if (fd == -1)
-        {
-                perror("Opening video device");
-                return 1;
-        }
-        if(print_caps(fd))
+    int fd;
+
+    fd = open("/dev/video2", O_RDWR);
+    if (fd == -1)
+    {
+            perror("Opening video device");
             return 1;
-        
-        if(init_mmap(fd))
-            return 1;
-        int i;
-        
-        uint32_t frames = 0;
-        float fps = 0;
-       
-//        for (int i = 0; i < 100; i++)
-//            capture_image(fd)
-//                 
-        while (capture_image(fd) != 99)
-        {
-            frames ++;
-            if (sw.get_elapsed_ms() >= 1000)
-            {
-                fps =  1000 / (sw.get_elapsed_ms() / (float)frames);
-                std::cout << fps << std::endl;
-                sw.reset();
-                frames = 0;
-            }
-        }
-        close(fd);
-        return 0;
+    }
+    if(print_caps(fd))
+        return 1;
+    
+    if(init_mmap(fd))
+        return 1;
+    int i;
+    
+    uint32_t frames = 0;
+    float fps = 0;
+
+    cv::namedWindow("foo", cv::WINDOW_AUTOSIZE);
+
+    while (capture_image(fd) != 99)
+    {
+
+    }
+    close(fd);
+    return 0;
 }
